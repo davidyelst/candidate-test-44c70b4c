@@ -1,0 +1,39 @@
+version: '3'
+
+tasks:
+  up:
+    desc: Start the Docker Compose services in the background.
+    cmds:
+      - docker compose up -d
+
+  seed:
+    desc: Run backend migrations and seed the database.
+    dir: backend
+    cmds:
+      - uv run python manage.py migrate --noinput
+      - uv run python manage.py seed
+
+  test:
+    desc: Run the backend test suite.
+    dir: backend
+    cmds:
+      - uv run pytest
+
+  backend:
+    desc: Start the backend development server.
+    dir: backend
+    cmds:
+      - uv run python manage.py runserver
+
+  frontend:
+    desc: Start the frontend development server.
+    dir: frontend
+    cmds:
+      - pnpm run dev
+
+  receiver:
+    desc: Install webhook receiver dependencies and start the receiver.
+    dir: services/webhook-receiver
+    cmds:
+      - npm install --omit=dev --silent
+      - node index.js

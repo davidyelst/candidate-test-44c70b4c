@@ -1,0 +1,165 @@
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .models import Contract, TimesheetEntry
+from .serializers import (
+    ContractCreateSerializer,
+    ContractSerializer,
+    TimesheetEntrySerializer,
+)
+
+
+class ContractListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = self._get_queryset(request.user)
+        return Response(ContractSerializer(qs, many=True).data)
+
+    def post(self, request):
+        # Manual contract creation — primarily a convenience for walking through
+        # the app by hand. A company admin creates contracts for their own company;
+        # the company is taken from the admin, never trusted from the request body.
+        if not hasattr(request.user, 'company_admin'):
+            return Response(
+                {'detail': 'Only company admins can create contracts.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = ContractCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        contract = serializer.save(company=request.user.company_admin.company)
+        return Response(ContractSerializer(contract).data, status=status.HTTP_201_CREATED)
+
+    def _get_queryset(self, user):
+        if hasattr(user, 'company_admin'):
+            return Contract.objects.filter(
+                company=user.company_admin.company
+            ).select_related('company', 'freelancer')
+        if hasattr(user, 'freelancer'):
+            return Contract.objects.filter(
+                freelancer=user.freelancer
+            ).select_related('company', 'freelancer')
+        return Contract.objects.none()
+
+
+class ContractDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        # Fetch the contract and verify the current user should be able to see it.
+        # Company admins see contracts belonging to their company; freelancers see their own.
+        # Note: this permission check and the queryset construction are both inline here.
+        # TODO: extract permission checking into a reusable mixin or policy object
+        user = request.user
+
+        if hasattr(user, 'company_admin'):
+            try:
+                contract = Contract.objects.select_related('company', 'freelancer').get(
+                    pk=pk, company=user.company_admin.company
+                )
+            except Contract.DoesNotExist:
+                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        elif hasattr(user, 'freelancer'):
+            try:
+                contract = Contract.objects.select_related('company', 'freelancer').get(
+                    pk=pk, freelancer=user.freelancer
+                )
+            except Contract.DoesNotExist:
+                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        else:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(ContractSerializer(contract).data)
+
+
+class TimesheetListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        if hasattr(user, 'company_admin'):
+            qs = TimesheetEntry.objects.filter(
+                contract__company=user.company_admin.company
+            )
+        elif hasattr(user, 'freelancer'):
+            qs = TimesheetEntry.objects.filter(
+                contract__freelancer=user.freelancer
+            )
+        else:
+            qs = TimesheetEntry.objects.none()
+
+        # Filter by status query param
+        status_param = request.query_params.get('status')
+        if status_param:
+            qs = qs.filter(status=status_param)
+
+        # Filter by contract id query param
+        # TODO: move filter logic to a proper FilterSet class when we add django-filter
+        contract_param = request.query_params.get('contract')
+        if contract_param:
+            qs = qs.filter(contract_id=contract_param)
+
+        return Response(TimesheetEntrySerializer(qs, many=True).data)
+
+    def post(self, request):
+        if not hasattr(request.user, 'freelancer'):
+            return Response(
+                {'detail': 'Only freelancers can submit timesheet entries.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = TimesheetEntrySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        contract_id = request.data.get('contract')
+        try:
+            contract = Contract.objects.get(pk=contract_id, freelancer=request.user.freelancer)
+        except Contract.DoesNotExist:
+            return Response({'contract': 'Invalid contract.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        entry = serializer.save(contract=contract, status=TimesheetEntry.STATUS_SUBMITTED)
+        return Response(TimesheetEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
+
+
+class TimesheetDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        user = request.user
+
+        if hasattr(user, 'company_admin'):
+            try:
+                entry = TimesheetEntry.objects.get(
+                    pk=pk, contract__company=user.company_admin.company
+                )
+            except TimesheetEntry.DoesNotExist:
+                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        elif hasattr(user, 'freelancer'):
+            try:
+                entry = TimesheetEntry.objects.get(
+                    pk=pk, contract__freelancer=user.freelancer
+                )
+            except TimesheetEntry.DoesNotExist:
+                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        new_status = request.data.get('status')
+        rejection_reason = request.data.get('rejection_reason')
+
+        if new_status == TimesheetEntry.STATUS_REJECTED and not rejection_reason:
+            return Response(
+                {'rejection_reason': 'This field is required when rejecting an entry.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = TimesheetEntrySerializer(entry, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
