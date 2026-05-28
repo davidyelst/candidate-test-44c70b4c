@@ -100,8 +100,8 @@ Right now, an admin has to click into each contract to see what's waiting on the
 - Bulk approve / bulk reject, with a reason required on rejection
 - A running total of the cost being approved (hours × contract rate)
 - Filters that matter: by contract, by freelancer, by date range
-- Clear empty, loading, and error states
-
+- Anything else you think is appropriate to provide a good UX.
+ 
 **What we're looking for:** how you compose UI, how you handle state, how aggressive you are with optimistic updates, what you choose to test on the frontend, and small product decisions such as the empty state, rejection flow, and partial failures during bulk approval.
 
 ---
@@ -112,18 +112,12 @@ A way for finance to generate monthly invoices from approved hours.
 
 **The frontend is fully wired.** The "Billing" page has a month/year picker and a "Run billing" button that POSTs to `/api/billing/runs/`. Below it, a list of generated invoices reads from `GET /api/invoices/?month=YYYY-MM`. Clicking an invoice opens a detail view from `GET /api/invoices/<id>/`. All three endpoints currently exist as stubs that return hardcoded payloads. The UI is wired to these endpoints, but the backend does not yet implement the behaviour.
 
-**What you build:**
-- An `Invoice` model — one per Company × Freelancer × month, with line items per approved entry, totals, period bounds, generation timestamp
-- A real implementation of `POST /api/billing/runs/` that scans all approved entries in the period and creates invoices
-- Real implementations of `GET /api/invoices/` (filterable by month) and `GET /api/invoices/<id>/` (with line items)
-- **Delivery via email.** When an invoice is created, an email goes to the company's `billing_email` (seeded) and to the freelancer. Mailpit catches everything — check `localhost:8025` to see what arrived. Choose an approach: HTML or plain text, one email or two, and what the email contains.
+**What you need to build:**
+- Implementation of those endpoints which results in us delivering invoices for approved entries in the selected period.
+- Any supporting data models you think are appropriate.
+- When an invoice is created, an email goes to the company's `billing_email` (seeded) and to the freelancer. Mailpit catches everything, check `localhost:8025` to see what arrived.
 
-**Two things you must get right:**
-
-1. **Idempotency.** Re-running billing for the same month must not double-create. This endpoint will get retried, scheduled, and accidentally clicked twice. Model it accordingly.
-2. **Partial months.** Contracts that start or end mid-period are common. Your billing run for March needs to behave correctly when a contract ran 12 Feb – 18 Mar.
-
-**A note on the medium.** In production, an invoice would be a PDF or an e-invoice document with a legally compliant schema. For this exercise, an email containing the invoice content is a stand-in for that delivery — we're not asking you to generate a legal invoice. Treat email as the transport, and model the invoice as if you might need to render it to PDF later.
+**A note on the medium.** In production, an invoice would be a PDF or an e-invoice document with a legally compliant schema. For this exercise, an email containing the invoice content is a stand-in for that delivery.
 
 **What we're looking for:** data modelling, idempotency thinking, transaction boundaries (what happens if the email send fails *after* the invoice row is committed?), and what you choose to test.
 
@@ -135,7 +129,7 @@ A minimal developer integration: let a company admin configure webhook destinati
 
 **The frontend has a stubbed "Developer settings" page.** A form for adding a destination URL, a table for listing configured endpoints. The form POSTs to `/api/webhook-endpoints/`, which returns a hardcoded response and does nothing. There's a `webhook-receiver` service running in docker-compose on `localhost:8027` with its own web UI — point your webhooks at `http://webhook-receiver:8027/hook` (from inside the docker network) or `http://localhost:8027/hook` if delivering from outside, and you'll see them land.
 
-**What you build:**
+**What you need to build:**
 - A data model for webhook endpoints — URL, a secret, active/disabled state, anything else you think matters
 - Configuration UI: create, edit, delete, and a "send test event" action
 - A delivery log surfaced in the UI: what fired, when, response code, attempt number
