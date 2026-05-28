@@ -4,9 +4,9 @@ Welcome to the YunoJuno Fullstack Engineer take-home test. We appreciate the tim
 
 This document should explain everything, read it end-to-end before you get started. If you have any issues or questions, don't be afraid to reach out to your main recruitment contact.
 
-This code base is a small, deliberately incomplete slice of a product like YunoJuno, using similar tech to what we use day to day. The goal of the application is to let companies book freelancers, freelancers can log hours, hours can be approved, and hours then roll up into bills. The project is built to look and feel like an existing product codebase, most of it is clean but there are a few rough edges.
+This codebase is a small, deliberately incomplete slice of a product like YunoJuno, using similar tech to what we use day to day. The goal of the application is to let companies book freelancers, freelancers can log hours, hours can be approved, and hours then roll up into bills. The project is built to look and feel like an existing product codebase, most of it is clean but there are a few rough edges.
 
-Below we outline 3 possible tasks, you should select two of them to complete.
+Below, we outline 3 possible tasks. You should select **two** of them to complete.
 
 ---
 
