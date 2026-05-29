@@ -172,6 +172,6 @@ Half a page to a page is the right length, we read it all in detail along with t
 
 ## Time
 
-We don't set a hard cap. Most candidates using AI tooling finish in a few hours. If you find yourself spending a full day on this, something's gone wrong — get in touch before going further.
+We don't set a hard cap. Most candidates using AI tooling finish in 2-3 hours. If you find yourself spending significantly more on this, something's gone wrong — get in touch before going further.
 
 If you have questions about the brief, anything blocking, or anything ambiguous: reach out to your primary recruitment contact.
