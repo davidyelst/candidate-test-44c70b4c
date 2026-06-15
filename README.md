@@ -39,7 +39,7 @@ Once those tools are installed you can use the following tasks provided by the [
 task up        # boot the supporting stack
 task seed      # load seed data (run once after task up)
 task test      # run backend tests
-task backend   # run backend dev server
+task backend   # run backend dev server + Celery worker
 task frontend  # run frontend dev server
 ```
 
@@ -50,6 +50,15 @@ task frontend  # run frontend dev server
 - Webhook receiver: `http://localhost:8027`
 
 Seed credentials are in `seed_users.md`. There's one company admin and one freelancer pre-loaded with realistic data — a handful of contracts, ~40 timesheet entries in mixed states across submitted, approved, and rejected.
+
+**Running background jobs.** `task up` now also starts Redis (the Celery broker) alongside Postgres and Mailpit. `task backend` now starts **both** the Django dev server and the Celery worker (invoice emails + webhook delivery) — one command, no separate worker terminal. The worker runs on the host, so webhooks deliver to `http://localhost:8027/hook`.
+
+Need them apart — e.g. clean worker logs, or restarting the worker after editing task code? Run them individually:
+
+```bash
+task backend:server   # Django dev server only
+task backend:worker   # Celery worker only
+```
 
 ---
 
