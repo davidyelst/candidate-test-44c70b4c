@@ -48,11 +48,7 @@ export interface Invoice {
   [key: string]: unknown
 }
 
-export interface WebhookEndpoint {
-  id: string | number
-  url: string
-  active: boolean
-}
+// Webhook types live in api/webhooks.ts, inferred from their Zod schemas (z.infer).
 
 function getToken(): string | null {
   return localStorage.getItem('token')
