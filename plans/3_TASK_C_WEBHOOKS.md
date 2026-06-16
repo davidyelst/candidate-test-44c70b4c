@@ -1,6 +1,6 @@
 # Phase 3 — Task C: Outbound webhooks (fullstack)
 
-> **Status:** Not started
+> **Status:** ✅ Implemented
 > **Depends on:** Phase 0 (Celery for async delivery + retries), Phase 1 (perms), Phase 2 (the invoices `BillingRun.generate()` creates — Task C hooks its trigger onto their `on_commit`)
 > **Part of:** the Task B + Task C "lift" — see [README](./README.md)
 
@@ -43,26 +43,31 @@ Fires when an invoice is **created** by the billing run (`BillingRun.generate()`
 
 **Alternative rejected:** the earlier three-table split (`Endpoint` / `WebhookEvent` / `WebhookDelivery`). The separate event table only pays off if one event needs *shared identity across endpoints*, which we don't — and it's over-normalized for a single event type. Collapsing it puts the log in one table that reads directly. (Same "don't add a table that doesn't pay for itself" call as Task B.)
 
-### 3. Trigger: explicit `emit()`, async via Celery — **not** a `post_save` signal
+### 3. Trigger: explicit `WebhookDelivery.fan_out()`, async via Celery — **not** a `post_save` signal
 
-Task C wires `BillingRun.generate()` to call `emit('invoice.created', invoice)` inside its per-invoice `transaction.on_commit` (`emit` imported locally inside `generate()` to avoid a billing→webhooks import cycle). The seam lives in its own importable module so it isn't trapped inside billing/webhooks internals:
+Task C wires `BillingRun.generate()` to call `WebhookDelivery.fan_out(invoice.company, 'invoice.created', invoice.as_event_data())` inside its per-invoice `transaction.on_commit` (`WebhookDelivery` imported locally inside `generate()` to avoid a billing→webhooks import cycle). The emission seam is a **classmethod on the delivery model itself** (fat-model: the model that owns deliveries owns how they're created), with a sibling for the single-endpoint test path:
 
 ```python
-# webhooks/events.py — the one emission seam
-def emit(event_type, obj):          # For use by Task A too: emit('timesheet.approved', entry) on bulk approve
-    """Fan an event out to the company's ACTIVE endpoints: create a WebhookDelivery per
-    endpoint and enqueue deliver_webhook for each. Call from inside transaction.on_commit."""
+# webhooks/models.py — classmethods on WebhookDelivery
+@classmethod
+def fan_out(cls, company, event_type, data):    # For use by Task A too: fan_out(entry.company, 'timesheet.approved', …)
+    """Build the versioned envelope and fan it out to the company's ACTIVE endpoints:
+    one WebhookDelivery per endpoint, each enqueuing deliver_webhook. Call inside on_commit."""
+    ...
+
+@classmethod
+def enqueue_for(cls, endpoint, event_type, data):   # one endpoint — backs the "send test event" button
     ...
 ```
 
-`emit` looks up the company's **active** endpoints, creates one `WebhookDelivery` per endpoint, and enqueues one Celery `deliver_webhook` task each.
+`fan_out` looks up the company's **active** endpoints, creates one `WebhookDelivery` per endpoint, and enqueues one Celery `deliver_webhook` task each. The caller passes the already-built `data` block (billing supplies `Invoice.as_event_data()`), so billing owns its payload shape and webhooks owns the envelope + delivery.
 
-**Hand-off to Task A** *(noted, not built here)*: when A builds bulk approve, it fires its event the same way — `emit('timesheet.approved', entry)` from the approval **code path**, *not* a `post_save` signal (`bulk_update`/`.update()` bypass signals — see below). `emit` is per-object today; a bulk variant (accept an iterable / `emit_many`) is a trivial extension when A needs it.
+**Hand-off to Task A** *(noted, not built here)*: when A builds bulk approve, it fires its event the same way — `WebhookDelivery.fan_out(entry.company, 'timesheet.approved', …)` from the approval **code path**, *not* a `post_save` signal (`bulk_update`/`.update()` bypass signals — see below). A bulk variant (accept an iterable) is a trivial extension when A needs it.
 
-**Why explicit emit, not `post_save`:**
+**Why an explicit call, not `post_save`:**
 - We know the exact point an invoice becomes real (`BillingRun.generate()` creates it); emitting right there is direct. A `post_save` signal fires on *every* `Invoice` save — including the `save(update_fields=['subtotal'])` Phase 2 does right after create — so it would have to *re-derive* "is this the creating save?" (`created` flag / inspect `update_fields`) after the fact — more work, more fragile.
-- `post_save` fires *before* commit — you'd risk delivering for an invoice that then rolls back. The emit is already inside `on_commit`.
-- Coherence + the bulk rule (same decision as Task B): `post_save` is bypassed by `bulk_create`/`bulk_update`, and a signal here would be a *second*, competing trigger alongside the explicit emit. One mechanism, from the code that makes the change.
+- `post_save` fires *before* commit — you'd risk delivering for an invoice that then rolls back. The call is already inside `on_commit`.
+- Coherence + the bulk rule (same decision as Task B): `post_save` is bypassed by `bulk_create`/`bulk_update`, and a signal here would be a *second*, competing trigger alongside the explicit call. One mechanism, from the code that makes the change.
 
 **Why async (Celery, Phase 0):** delivery POSTs to an arbitrary, possibly slow/down external URL — it must never block or fail the billing run, and retries/backoff require a queue.
 - **Rejected:** synchronous in-request delivery — blocks the trigger, no retries, a down endpoint would break billing.
@@ -178,9 +183,9 @@ The worker runs on the **host** (`task worker`), so it delivers to `http://local
 
 ## Done when
 
-- [ ] Admin can create / edit / delete endpoints and send a test event.
-- [ ] Deliveries log shows status, response code, attempt number (reads `WebhookDelivery`).
-- [ ] A real `invoice.created` (on invoice creation) fans out to active endpoints, signs, retries on failure → `exhausted`, and lands in the receiver.
-- [ ] `emit()` lives in an importable module (`webhooks/events.py`), marked `For use by Task A`; Task C adds the call in `BillingRun.generate()`.
-- [ ] Developer Settings UI surfaces config + delivery log; `is_active` agrees across the stack; the hint URL points at `localhost:8027`.
-- [ ] Tests green (signing, retry state machine, idempotency, fan-out, trigger wiring, perms).
+- [x] Admin can create / edit / delete endpoints and send a test event.
+- [x] Deliveries log shows status, response code, attempt number (reads `WebhookDelivery`).
+- [x] A real `invoice.created` (on invoice creation) fans out to active endpoints, signs, retries on failure → `exhausted`, and lands in the receiver.
+- [x] `WebhookDelivery.fan_out()` is the importable emission seam (a classmethod, marked `For use by Task A`); Task C adds the call in `BillingRun.generate()`.
+- [x] Developer Settings UI surfaces config + delivery log; `is_active` agrees across the stack; the hint URL points at `localhost:8027`.
+- [x] Tests green (signing, retry state machine, idempotency, fan-out, trigger wiring, perms).

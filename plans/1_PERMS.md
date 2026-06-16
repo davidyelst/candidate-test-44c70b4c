@@ -1,6 +1,6 @@
 # Phase 1 — Tenant-scoping + capability gate ("perms")
 
-> **Status:** Not started
+> **Status:** ✅ Implemented
 > **Depends on:** nothing (pure code; can land alongside Phase 0)
 > **Consumed by:** Phase 2 (billing endpoints), Phase 3 (webhook endpoints)
 > **Part of:** the Task B + Task C "lift" — see [README](./README.md)
@@ -116,6 +116,6 @@ Refactor **only the timesheet views** in `contracts/` to the new perms (approval
 
 ## Done when
 
-- [ ] `accounts/permissions.py` exists with `company_for` + `IsCompanyAdmin` + `CompanyScopedMixin`.
-- [ ] Unit tests cover admin/freelancer/cross-company cases.
-- [ ] Phases 2 and 3 can `import` and consume the kit.
+- [x] `accounts/permissions.py` exists with `company_for` + `IsCompanyAdmin` + `CompanyScopedMixin`.
+- [x] Unit tests cover admin/freelancer/cross-company cases.
+- [x] Phases 2 and 3 can `import` and consume the kit.

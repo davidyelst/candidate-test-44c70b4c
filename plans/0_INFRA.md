@@ -1,6 +1,6 @@
 # Phase 0 — Async infrastructure (Celery + Redis)
 
-> **Status:** Not started
+> **Status:** ✅ Implemented
 > **Depends on:** nothing (this is the foundation)
 > **Consumed by:** Phase 2 (async invoice email), Phase 3 (async webhook delivery)
 > **Part of:** the shared foundation for Task B + Task C
@@ -76,7 +76,7 @@ This keeps the mental model intact: *compose = infra; `task` = host processes*. 
    - Add `backend:worker` → `uv run celery -A config worker -l info` (`dir: backend`).
    - Redefine `backend` as a thin task that runs both in parallel: `deps: [backend:server, backend:worker]` (Taskfile runs `deps` concurrently; with no `cmds` of its own, `task backend` just keeps both processes up). Each subtask remains runnable on its own.
    - **Behaviour note:** because these run as parallel `deps`, if either process exits non-zero (e.g. the worker crashes) `task backend` tears down both. In dev that is desirable — a dead worker is immediately visible rather than silently absent — but it is a deliberate change from the standalone-`task worker` model, where the server kept running independently of the worker.
-   - *(Optional, not needed yet)* `backend:beat` → `uv run celery -A config beat -l info`, for if/when billing becomes scheduled.
+   - `backend:beat` → `uv run celery -A config beat -l info`. **Built by Task B (Phase 2 §6)**, which makes the scheduled monthly run a confirmed requirement; kept out of the default `task backend` aggregate.
 7. **Smoke task** — `backend/core/tasks.py` with a trivial `@shared_task def ping(): return 'pong'` to prove the wiring end-to-end before any business logic depends on it. (`core` is the natural home — it is the near-empty shared app.)
 8. **`README.md`** — document the new infra for colleagues in *Getting started*: note that `task up` now also boots Redis, and that `task backend` now runs the worker too. Drafted addition (apply when the infra lands):
 
@@ -102,16 +102,16 @@ Manual smoke check: `task up` (boots Redis) → `task backend` (starts the serve
 
 ## Deliberately deferred (→ CANDIDATE_NOTES.md)
 
-- **Celery Beat / scheduled billing** — not built. The run is admin-triggered and idempotent (Phase 2), so a cron is a trivial future add, not a requirement.
+- ~~**Celery Beat / scheduled billing** — not built.~~ **Superseded:** Task B (Phase 2 §6) makes the scheduled monthly run a confirmed requirement and owns the Beat setup (`CELERY_BEAT_SCHEDULE`, the `backend:beat` task). Built, not deferred.
 - **Flower / task monitoring** — out of scope here.
 - **Dead-letter queue** — replaced by the explicit `exhausted` delivery state + manual resend in Phase 3.
 
 ## Done when
 
-- [ ] `redis` runs via `task up`.
-- [ ] Celery app boots with Django (`config/__init__.py` exposes `celery_app`).
-- [ ] `task backend` starts the dev server **and** the worker, and the worker connects to Redis (`task backend:worker` also runs standalone).
-- [ ] `ping.delay()` round-trips through the worker.
+- [x] `redis` runs via `task up`.
+- [x] Celery app boots with Django (`config/__init__.py` exposes `celery_app`).
+- [x] `task backend` starts the dev server **and** the worker, and the worker connects to Redis (`task backend:worker` also runs standalone).
+- [x] `ping.delay()` round-trips through the worker.
 
 ---
 
@@ -162,9 +162,9 @@ The async work this phase introduced is operationally invisible by default:
 
 ### Done when
 
-- [ ] `LOGGING` config in `settings.py`; app `INFO` logs surface on the console.
-- [ ] Celery `setup_logging` receiver connected, so the worker uses Django's config (verify: a task's `INFO` log appears in `task backend:worker` output, in the same format).
-- [ ] The billing run logs start, completion (with billed/failed counts), and per-failure tracebacks.
+- [x] `LOGGING` config in `settings.py`; app `INFO` logs surface on the console.
+- [x] Celery `setup_logging` receiver connected, so the worker uses Django's config (verify: a task's `INFO` log appears in `task backend:worker` output, in the same format).
+- [x] The billing run logs start, completion (with billed/failed counts), and per-failure tracebacks.
 
 ### Still deferred (→ CANDIDATE_NOTES.md)
 

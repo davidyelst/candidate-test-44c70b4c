@@ -1,6 +1,6 @@
 # Phase 2 — Task B: Monthly billing run
 
-> **Status:** Not started
+> **Status:** ✅ Implemented
 > **Depends on:** Phase 0 (Celery for async email + Beat for scheduling), Phase 1 (perms for endpoint gating + scoping)
 > **Feeds:** Phase 3 (Task C builds on the invoices this run creates)
 > **Part of:** the Task B + Task C "lift" — see [README](./README.md)
@@ -104,6 +104,9 @@ A classmethod on `BillingRun` is the single entry point; both triggers (§6) cal
 def generate(cls, period, company=None):
     """Bill every approved, not-yet-billed entry dated on/before `period` end into invoices.
     company=None → all companies (Beat); company=X → just that company (the button)."""
+    from .tasks import send_invoice_email
+    from webhooks.models import WebhookDelivery            # local imports: contain the billing→webhooks dep
+
     run = cls.objects.create(period=period, company=company)
     contracts = Contract.objects.select_related('company', 'freelancer')
     if company is not None:
@@ -126,6 +129,10 @@ def generate(cls, period, company=None):
                                     rate=contract.daily_rate, amount=e.cost)
                     for e in entries])
                 transaction.on_commit(lambda inv=invoice: send_invoice_email.delay(inv.id))
+                # Task C: fan invoice.created out to the company's active endpoints, inside on_commit
+                # so we only deliver for a committed invoice (explicit call, not a post_save signal).
+                transaction.on_commit(lambda inv=invoice: WebhookDelivery.fan_out(
+                    inv.company, 'invoice.created', inv.as_event_data()))
             count += 1
         except Exception:                                         # one contract's failure can't sink the batch
             logger.exception('Billing run %s: failed to bill contract %s', run.id, contract.id)
@@ -139,6 +146,8 @@ def generate(cls, period, company=None):
 Each invoice commits in **its own transaction wrapped in `try/except`**, so a single company's failure is logged and skipped — it **cannot** sink the rest of the batch. This matters precisely because the Beat run is **system-wide** (§6): one company's bad data must not abort every other company's billing. The bare `atomic()` alone wouldn't give this — it rolls back the one invoice but re-raises, so the `try/except` is what actually delivers the isolation. `count` reflects only invoices that committed.
 
 A skipped company writes **no** line items (its `atomic()` block rolled back), so its entries stay unbilled and the **next** run sweeps them up — fault-isolation and *nothing-left-behind* (§3 selection) compose cleanly, no entry is stranded by a transient failure. `on_commit` fires per invoice. (`logger` is module-level.)
+
+**Run-level failure + the webhook emit (the Task C additions).** The full method also wraps the loop in an outer `try/except` (omitted above for brevity): a *run-level* error — a malformed `period`, the DB going away — marks the `BillingRun` **FAILED** and re-raises. That's the one place the `FAILED` status (§2) is set, and it's distinct from the per-contract isolation above (which logs-and-skips one contract). Separately, inside each committed invoice's `on_commit`, alongside the email, the run fans an `invoice.created` webhook to the company's active endpoints — `WebhookDelivery.fan_out(invoice.company, 'invoice.created', invoice.as_event_data())`. `Invoice.as_event_data()` is the minimal external summary used as the event's `data` block (`subtotal` serialised as a string so the `Decimal` survives JSON) — see [Task C §3 + §7](./3_TASK_C_WEBHOOKS.md).
 
 #### Selection — what guarantees "nothing left behind"
 
@@ -256,10 +265,10 @@ Given the time-box, `billing/tests/test_billing.py` is **one representative test
 
 ## Done when
 
-- [ ] `BillingRun.generate(period, company=None)` bills all approved + unbilled entries (≤ period end) into per-(company, freelancer) invoices with snapshot line items.
-- [ ] The three wired endpoints return real, company-scoped data; the button shows `invoices_generated`.
-- [ ] A re-run bills nothing new; a late-approved entry is picked up on the next run (nothing left behind).
-- [ ] Invoice emails land in Mailpit for both recipients after commit; `email_status` reflects the outcome.
-- [ ] Celery Beat triggers a monthly, all-companies run via `generate(..., company=None)`, with the infra wired: `CELERY_BEAT_SCHEDULE` (crontab, 1st of month) in settings, a `backend:beat` Taskfile task + README note, and `celerybeat-schedule`/`celerybeat.pid` git-ignored.
-- [ ] `TimesheetEntry.cost` is the one canonical cost calc (a property on the contracts model, shared with Task A); invoice lines read `entry.cost`.
-- [ ] A single demonstrative test is green (a run produces an invoice with snapshot lines and the right total); broader coverage is deferred to CANDIDATE_NOTES.md.
+- [x] `BillingRun.generate(period, company=None)` bills all approved + unbilled entries (≤ period end) into per-(company, freelancer) invoices with snapshot line items.
+- [x] The three wired endpoints return real, company-scoped data; the button shows `invoices_generated`.
+- [x] A re-run bills nothing new; a late-approved entry is picked up on the next run (nothing left behind).
+- [x] Invoice emails land in Mailpit for both recipients after commit; `email_status` reflects the outcome.
+- [x] Celery Beat triggers a monthly, all-companies run via `generate(..., company=None)`, with the infra wired: `CELERY_BEAT_SCHEDULE` (crontab, 1st of month) in settings, a `backend:beat` Taskfile task + README note, and `celerybeat-schedule`/`celerybeat.pid` git-ignored.
+- [x] `TimesheetEntry.cost` is the one canonical cost calc (a property on the contracts model, shared with Task A); invoice lines read `entry.cost`.
+- [x] A single demonstrative test is green (a run produces an invoice with snapshot lines and the right total); broader coverage is deferred to CANDIDATE_NOTES.md.
