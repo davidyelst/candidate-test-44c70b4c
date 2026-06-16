@@ -41,50 +41,64 @@ class BillingRun(models.Model):
         """Bill every approved, not-yet-billed entry dated on/before `period` end
         into invoices. company=None → all companies (Beat); company=X → just that
         company (the button). Returns (run, invoices_created)."""
-        # Imported here, not at module top, to avoid the billing.models ↔ billing.tasks
-        # import cycle.
+        # Imported here, not at module top: `send_invoice_email` avoids the
+        # billing.models ↔ billing.tasks import cycle, and `WebhookDelivery` keeps the
+        # billing→webhooks dependency contained to the one method that needs it.
         from .tasks import send_invoice_email
+        from webhooks.models import WebhookDelivery
 
         run = cls.objects.create(period=period, company=company)
         scope = company.name if company is not None else 'all companies'
         logger.info('Billing run %s started: period=%s, scope=%s', run.id, period, scope)
 
-        contracts = Contract.objects.select_related('company', 'freelancer')
-        if company is not None:
-            contracts = contracts.filter(company=company)
+        try:
+            contracts = Contract.objects.select_related('company', 'freelancer')
+            if company is not None:
+                contracts = contracts.filter(company=company)
 
-        count = 0
-        failed = 0
-        for contract in contracts:
-            # Approved, not yet on any invoice (line_items__isnull), dated on/before the
-            # cutoff — one predicate gives both 'billed once' and 'nothing left behind'.
-            entries = (contract.timesheet_entries
-                       .filter(status=TimesheetEntry.STATUS_APPROVED, line_items__isnull=True,
-                               date__lte=end_of_month(period))
-                       .select_related('contract').order_by('date'))
-            if not entries:
-                continue
-            try:
-                with transaction.atomic():                     # one invoice per txn
-                    invoice = Invoice.objects.create(
-                        billing_run=run, company=contract.company, freelancer=contract.freelancer,
-                        period=period, subtotal=sum(e.cost for e in entries),
-                    )
-                    InvoiceLineItem.objects.bulk_create([
-                        InvoiceLineItem(invoice=invoice, timesheet_entry=e, date=e.date, hours=e.hours,
-                                        rate=contract.daily_rate, amount=e.cost)
-                        for e in entries
-                    ])
-                    transaction.on_commit(lambda inv=invoice: send_invoice_email.delay(inv.id))
-                count += 1
-            except Exception:   # one contract's failure must not sink the rest of the batch
-                failed += 1
-                logger.exception('Billing run %s: failed to bill contract %s', run.id, contract.id)
-                continue
-        run.status = cls.Status.COMPLETED
-        run.save(update_fields=['status'])
-        logger.info('Billing run %s completed: %s billed, %s failed', run.id, count, failed)
-        return run, count
+            count = 0
+            failed = 0
+            for contract in contracts:
+                # Approved, not yet on any invoice (line_items__isnull), dated on/before the
+                # cutoff — one predicate gives both 'billed once' and 'nothing left behind'.
+                entries = (contract.timesheet_entries
+                           .filter(status=TimesheetEntry.STATUS_APPROVED, line_items__isnull=True,
+                                   date__lte=end_of_month(period))
+                           .select_related('contract').order_by('date'))
+                if not entries:
+                    continue
+                try:
+                    with transaction.atomic():                     # one invoice per txn
+                        invoice = Invoice.objects.create(
+                            billing_run=run, company=contract.company, freelancer=contract.freelancer,
+                            period=period, subtotal=sum(e.cost for e in entries),
+                        )
+                        InvoiceLineItem.objects.bulk_create([
+                            InvoiceLineItem(invoice=invoice, timesheet_entry=e, date=e.date, hours=e.hours,
+                                            rate=contract.daily_rate, amount=e.cost)
+                            for e in entries
+                        ])
+                        transaction.on_commit(lambda inv=invoice: send_invoice_email.delay(inv.id))
+                        # Task C: fan an invoice.created webhook out to the company's active
+                        # endpoints — an explicit call from the code path (not a post_save
+                        # signal), inside on_commit so we only deliver for a committed invoice.
+                        transaction.on_commit(
+                            lambda inv=invoice: WebhookDelivery.fan_out(
+                                inv.company, 'invoice.created', inv.as_event_data()))
+                    count += 1
+                except Exception:   # one contract's failure must not sink the rest of the batch
+                    failed += 1
+                    logger.exception('Billing run %s: failed to bill contract %s', run.id, contract.id)
+                    continue
+            run.status = cls.Status.COMPLETED
+            run.save(update_fields=['status'])
+            logger.info('Billing run %s completed: %s billed, %s failed', run.id, count, failed)
+            return run, count
+        except Exception:   # run-level failure (not one contract) — mark the run FAILED and surface it
+            run.status = cls.Status.FAILED
+            run.save(update_fields=['status'])
+            logger.exception('Billing run %s failed', run.id)
+            raise
 
 
 class Invoice(models.Model):
@@ -123,6 +137,19 @@ class Invoice(models.Model):
             lines.append(f'{li.date:%Y-%m-%d} {li.hours:>7} {li.rate:>10} {li.amount:>12}')
         lines += ['', f'Total: {self.subtotal}']
         return '\n'.join(lines)
+
+    def as_event_data(self):
+        """The `data` block of the invoice.created webhook payload — a minimal external
+        summary (parallels `as_plaintext()` for the email). `subtotal` is a string so the
+        Decimal survives JSON without precision loss."""
+        return {
+            'invoice_id': self.id,
+            'period': f'{self.period:%Y-%m}',
+            'subtotal': str(self.subtotal),
+            'freelancer': {'id': self.freelancer_id, 'name': self.freelancer.name},
+            'company_id': self.company_id,
+            'line_item_count': self.line_items.count(),
+        }
 
 
 class InvoiceLineItem(models.Model):
