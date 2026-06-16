@@ -53,56 +53,52 @@ Renaming to `CompanyUser` / `CompanyMembership` would touch migrations, the `see
 
 ## Implementation (the kit — ~30 lines, all in `accounts/`)
 
-`accounts/` owns `Company` / `CompanyAdmin` / `Freelancer`, so the role logic belongs there.
+`accounts/` owns `Company` / `CompanyAdmin` / `Freelancer`, so the membership/permission logic belongs there.
 
-**`accounts/roles.py`** — the one resolver:
+**One file (reviewed):** the kit is ~30 lines about a single concern — access control for company-only endpoints — so it lives in one module, `accounts/permissions.py`, holding the resolver, the gate, and the scope mixin together. An earlier draft split it across three files (resolver / permission / mixin); that fragmented one small concept (and `IsCompanyAdmin` is a four-line wrapper over `company_for` — keeping them apart bought nothing but extra imports). It's named `permissions.py` — the conventional Django home for access control, and the umbrella the DRF docs use for both `permission_classes` and queryset scoping — *not* `roles.py`, since there are no roles here.
+
+**`accounts/permissions.py`** — resolver + gate + scope, together:
 ```python
+from rest_framework.permissions import BasePermission
+
+
 def company_for(user):
     """Company this user belongs to, or None. (CompanyAdmin == company membership.)"""
     admin = getattr(user, 'company_admin', None)
     return admin.company if admin else None
 
-def freelancer_for(user):
-    return getattr(user, 'freelancer', None)
-```
-
-**`accounts/permissions.py`** — the capability gate:
-```python
-from rest_framework.permissions import BasePermission
-from .roles import company_for
 
 class IsCompanyAdmin(BasePermission):
-    """User belongs to a company. ('Admin' is the only company-user type in the model.)"""
+    """Gate company-only endpoints: the caller must belong to a company."""
     message = 'You must be a company user to do this.'
     def has_permission(self, request, view):
         return company_for(request.user) is not None
-```
 
-**`accounts/mixins.py`** — the scope filter:
-```python
-from .roles import company_for
 
-class CompanyScopedQuerysetMixin:
-    company_lookup = 'company'   # override per view: 'endpoint__company', 'contract__company'
+class CompanyScopedMixin:
+    company_lookup = 'company'   # override per view: 'endpoint__company', etc.
+
     def get_queryset(self):
         company = company_for(self.request.user)
         if company is None:
             return self.queryset.none()
         return self.queryset.filter(**{self.company_lookup: company})
-```
-
-### Consumption pattern (used by Phases 2 & 3)
-```python
-class SomeView(CompanyScopedQuerysetMixin, ListCreateAPIView):
-    permission_classes = [IsAuthenticated, IsCompanyAdmin]
-    serializer_class = SomeSerializer
-    queryset = SomeModel.objects.all()
-    company_lookup = 'company'           # or 'endpoint__company', etc.
 
     def perform_create(self, serializer):
         serializer.save(company=company_for(self.request.user))  # stamp tenant, never from body
 ```
-Detail / update / delete need **nothing extra** — isolation falls out of the scoped queryset.
+
+**Why both a permission and a mixin, not one.** The DRF permissions docs are explicit: permission checks "are always run at the very start of the view, before any other code", and for a *create* the queryset offers no control while `permission_classes` apply globally. So `IsCompanyAdmin` is what denies a freelancer a clean 403 on every verb (list and POST included), before any body validation; `get_queryset` then scopes *which* rows a company user sees (cross-company → 404); `perform_create` stamps the owning company. A queryset alone can't gate a POST; a permission alone can't scope rows. The docs say to use both — so we do.
+
+### Consumption pattern (used by Phases 2 & 3)
+```python
+class SomeView(CompanyScopedMixin, ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsCompanyAdmin]
+    serializer_class = SomeSerializer
+    queryset = SomeModel.objects.all()
+    company_lookup = 'company'           # or 'endpoint__company', etc.
+```
+The view adds **nothing extra**: `get_queryset` (scoping) and `perform_create` (tenant stamp) come from the mixin, and detail / update / delete isolation falls out of the scoped queryset.
 
 ### Optional, contained backport
 Refactor **only the timesheet views** in `contracts/` to the new perms (approvals are adjacent to billing) — proves the migration is real, not theoretical, at low blast radius. **Mark optional**; skip under time pressure. Do **not** touch `contracts`/`accounts` further, and do not rewrite the working `APIView`s into generics wholesale.
@@ -120,6 +116,6 @@ Refactor **only the timesheet views** in `contracts/` to the new perms (approval
 
 ## Done when
 
-- [ ] `roles.py`, `permissions.py`, `mixins.py` exist with the shapes above.
+- [ ] `accounts/permissions.py` exists with `company_for` + `IsCompanyAdmin` + `CompanyScopedMixin`.
 - [ ] Unit tests cover admin/freelancer/cross-company cases.
 - [ ] Phases 2 and 3 can `import` and consume the kit.
