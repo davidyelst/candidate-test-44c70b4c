@@ -9,6 +9,7 @@ dependencies = [
     "python-decouple>=3.8",
     "celery>=5.4,<6.0",
     "redis>=5.0",
+    "requests>=2.34.2",
 ]
 
 [dependency-groups]
