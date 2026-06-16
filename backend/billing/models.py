@@ -1,5 +1,7 @@
-"""Billing models: a run fans out into one Invoice per (company × freelancer),
-each freezing the timesheet entries it bills as immutable line items.
+"""Billing models: a run fans out into one Invoice per *contract*, each freezing
+the timesheet entries it bills as immutable line items. (A freelancer with two
+contracts at one company therefore gets two invoices — and two emails — for the
+period; that is the intended grain, not per company × freelancer.)
 
 The monthly run is just a *trigger*; every run sweeps all approved, not-yet-billed
 entries dated on or before the period end, so nothing is ever left behind.
@@ -59,10 +61,10 @@ class BillingRun(models.Model):
             count = 0
             failed = 0
             for contract in contracts:
-                # Approved, not yet on any invoice (line_items__isnull), dated on/before the
+                # Approved, not yet on any invoice (line_item__isnull), dated on/before the
                 # cutoff — one predicate gives both 'billed once' and 'nothing left behind'.
                 entries = (contract.timesheet_entries
-                           .filter(status=TimesheetEntry.STATUS_APPROVED, line_items__isnull=True,
+                           .filter(status=TimesheetEntry.STATUS_APPROVED, line_item__isnull=True,
                                    date__lte=end_of_month(period))
                            .select_related('contract').order_by('date'))
                 if not entries:
@@ -102,9 +104,10 @@ class BillingRun(models.Model):
 
 
 class Invoice(models.Model):
-    """Per company × freelancer for a period. An invoice existing *means* it is
-    issued — the draft/issue/void lifecycle is deliberately deferred. `email_status`
-    is the only lifecycle: the financial record never depends on the notification."""
+    """Created per contract per period — a freelancer with two contracts at one
+    company therefore gets two invoices. An invoice existing *means* it is issued;
+    the draft/issue/void lifecycle is deliberately deferred. `email_status` is the
+    only lifecycle — the financial record never depends on the notification."""
 
     class EmailStatus(models.TextChoices):
         PENDING = 'pending', 'Pending'
@@ -157,8 +160,11 @@ class InvoiceLineItem(models.Model):
     so a later contract-rate change never mutates a past invoice."""
 
     invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name='line_items')
-    timesheet_entry = models.ForeignKey('contracts.TimesheetEntry', on_delete=models.PROTECT,
-                                        related_name='line_items')
+    # OneToOne: an entry is billable at most once, ever. A DB-level backstop so two
+    # concurrent runs (the /billing button racing the scheduled Beat run) can't both
+    # bill it — the loser's atomic() block hits IntegrityError and rolls back clean.
+    timesheet_entry = models.OneToOneField('contracts.TimesheetEntry', on_delete=models.PROTECT,
+                                           related_name='line_item')
     date = models.DateField()
     hours = models.DecimalField(max_digits=5, decimal_places=2)
     rate = models.DecimalField(max_digits=8, decimal_places=2)    # contract.daily_rate, frozen
