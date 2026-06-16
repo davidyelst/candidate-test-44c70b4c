@@ -1,4 +1,6 @@
 from pathlib import Path
+
+from celery.schedules import crontab
 from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -94,3 +96,42 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+# Celery Beat — scheduled monthly billing run (system-wide, all companies).
+# Uses Celery's built-in scheduler (no django-celery-beat); run with `task backend:beat`.
+CELERY_BEAT_SCHEDULE = {
+    'run-monthly-billing': {
+        'task': 'billing.tasks.run_monthly_billing',
+        'schedule': crontab(minute=0, hour=0, day_of_month=1),   # 00:00 on the 1st (TIME_ZONE='UTC')
+    },
+}
+
+# Logging — one console config shared by the Django process and the Celery worker
+# (the worker is pointed at this via the setup_logging signal in config/celery.py).
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '{asctime} {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        # Our apps log at INFO; explicit entries keep output single (no double
+        # handling via root) and make the level easy to tune.
+        'billing': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'webhooks': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'django': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+    },
+}

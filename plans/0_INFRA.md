@@ -112,3 +112,60 @@ Manual smoke check: `task up` (boots Redis) → `task backend` (starts the serve
 - [ ] Celery app boots with Django (`config/__init__.py` exposes `celery_app`).
 - [ ] `task backend` starts the dev server **and** the worker, and the worker connects to Redis (`task backend:worker` also runs standalone).
 - [ ] `ping.delay()` round-trips through the worker.
+
+---
+
+## Addendum — Logging (added after the initial infra landed)
+
+> **Context:** added once the billing run (Phase 2) existed and needed to be observable. Logging is the same *shape* of concern as the queue itself — cross-cutting infrastructure that Phase 0 owns and every phase consumes — so it belongs here, not in a business-logic phase. The Celery angle in particular (below) is squarely Phase 0's.
+
+### Why
+
+The async work this phase introduced is operationally invisible by default:
+
+- **App `INFO` logs are mute.** With no `LOGGING` setting, our app loggers (`billing.*`, `webhooks.*`) fall through to Python's last-resort handler, which only emits `WARNING`+. So every `logger.info(...)` — including the billing run's "started / completed" trail — never appears; only tracebacks (`logger.exception`) surface. The most useful operational lines are exactly the ones that vanish.
+- **Celery hijacks logging in the worker.** By default the worker reconfigures the root logger itself (`worker_hijack_root_logger` defaults on), so the *same* code logs differently depending on which process runs it: a billing run kicked off by the button (web process) vs. by Beat (worker) would format and level inconsistently.
+- **The billing run especially needs a trail.** It fans out across companies and one company can fail without sinking the batch (Phase 2 §3). Without a start/completion summary and per-failure tracebacks, a *partial* run is silent about what it skipped.
+
+### Decision: one basic dictConfig, shared by Django and the worker
+
+- **`LOGGING` in `settings.py`** — a single `dictConfig`: a console `StreamHandler`, a readable format (`{asctime} {levelname} {name}: {message}`), root at `INFO`, and explicit `billing` / `webhooks` / `django` loggers at `INFO`. `disable_existing_loggers: False` keeps Django's own loggers alive; the explicit per-app entries (`propagate: False`) keep each line single instead of double-handled via root.
+- **The worker uses that *same* config via the `setup_logging` signal** (`config/celery.py`):
+  ```python
+  @setup_logging.connect
+  def configure_logging(**kwargs):
+      dictConfig(settings.LOGGING)
+  ```
+  Connecting `setup_logging` is the linchpin: it tells Celery **not** to configure its own logging and to use ours instead, so the worker and the web process log identically.
+
+### Alternatives considered
+
+- **`CELERY_WORKER_HIJACK_ROOT_LOGGER = False` (instead of the signal).** Lighter — it just stops Celery clobbering the root logger — but it leaves the worker's task-logger formatting to Celery's own defaults, so worker lines wouldn't match the Django format. The `setup_logging` signal makes both processes consistent; chosen for that consistency.
+- **Structured / JSON logging (`structlog`, `python-json-logger`).** Better for log aggregation in production, but over-engineering for a take-home and a new dependency. **Deferred** — the basic config is a clean upgrade point.
+- **Leave Django's defaults.** Rejected: the billing run's operational trail would stay mute (see *Why*).
+
+### Tradeoffs (acknowledged)
+
+- **Console only** — no file handler, rotation, JSON, or request-id correlation. Fine for local dev; the `dictConfig` is the seam to add handlers later.
+- **Worker + server still share one terminal** under `task backend` (per the earlier tradeoff), so their lines interleave — now at least in a consistent format. `task backend:worker` alone still gives a clean worker stream.
+
+### Implementation
+
+1. **`backend/config/settings.py`** — add the `LOGGING` dictConfig described above.
+2. **`backend/config/celery.py`** — add the `setup_logging` receiver that calls `dictConfig(settings.LOGGING)`.
+3. **First consumer — the billing run (Phase 2).** `BillingRun.generate()` logs a **start** line and a **completion summary** (`N billed, K failed`, with the failure count now tracked); per-company failures keep `logger.exception` (full traceback) with the run id; the run view logs the **trigger + actor**. A button run now reads:
+   ```
+   INFO billing.views:  Billing run 7 triggered by admin@northstar.test for 2026-04
+   INFO billing.models: Billing run 7 started: period=2026-04-01, scope=NorthStar Consulting
+   INFO billing.models: Billing run 7 completed: 1 billed, 0 failed
+   ```
+
+### Done when
+
+- [ ] `LOGGING` config in `settings.py`; app `INFO` logs surface on the console.
+- [ ] Celery `setup_logging` receiver connected, so the worker uses Django's config (verify: a task's `INFO` log appears in `task backend:worker` output, in the same format).
+- [ ] The billing run logs start, completion (with billed/failed counts), and per-failure tracebacks.
+
+### Still deferred (→ CANDIDATE_NOTES.md)
+
+- Structured/JSON logging, log shipping/aggregation, request-id correlation, and per-environment verbosity (e.g. a `DEBUG`-driven or env-var log level).

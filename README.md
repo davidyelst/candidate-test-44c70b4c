@@ -58,7 +58,14 @@ Need them apart — e.g. clean worker logs, or restarting the worker after editi
 ```bash
 task backend:server   # Django dev server only
 task backend:worker   # Celery worker only
+task backend:beat     # Celery Beat scheduler only (monthly billing run)
 ```
+
+**Scheduled billing.** `task backend:beat` runs Celery Beat, which enqueues the
+system-wide monthly billing run at 00:00 on the 1st of each month (the worker
+executes it). It's a separate process and is intentionally left out of the default
+`task backend` so ordinary dev runs stay quiet — start it when exercising the
+schedule, or trigger a run directly with the `/billing` page's "Run billing" button.
 
 ---
 
