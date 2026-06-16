@@ -9,8 +9,8 @@ I took **Task B (monthly billing run)** and **Task C (outbound webhooks)**, leav
 **Task B — billing**
 - `BillingRun` → one `Invoice` per contract → line items that **snapshot rate/hours** at run time, so a later rate change can't rewrite history.
 - Cost (`hours × daily_rate ÷ 8`) is defined once on `TimesheetEntry`, shared with Task A.
-- **Idempotent, nothing left behind** by selection: it bills approved, not-yet-billed entries dated ≤ period end — re-runs do nothing, late approvals are caught next run. (Concurrency guard deferred.)
-- **Email after commit** (Celery): a failed send flags the invoice but never blocks or rolls it back — the brief's transaction-boundary question.
+- **Idempotent, nothing left behind** by selection: it bills approved, not-yet-billed entries dated ≤ period end — re-runs do nothing, late approvals are caught next run. A `unique` on the billed entry is the DB backstop against two concurrent runs double-billing it; a coordinating lock for that race is still deferred.
+- **Email after commit** (Celery), one message per recipient so neither party sees the other's address: a failed send flags the invoice but never blocks or rolls it back — the brief's transaction-boundary question.
 
 **Task C — webhooks**
 - Event `invoice.created`; async delivery (Celery), one `WebhookDelivery` per (event × endpoint) = delivery log + retry state machine.
@@ -18,7 +18,7 @@ I took **Task B (monthly billing run)** and **Task C (outbound webhooks)**, leav
 - Signed (HMAC-SHA256 over the body, per-endpoint secret), versioned envelope, stable `event_id` for at-least-once dedupe.
 - Frontend: Developer Settings — endpoint CRUD, send-test, and the delivery log.
 
-Tests cover the core paths; broadening is a next step.
+Tests cover both tasks' graded core — Task B's idempotent re-runs and email-fails-after-commit boundary, Task C's signing and retry state machine; broader CRUD/permission coverage is the next step.
 
 ## 3. Workflow
 
@@ -29,6 +29,6 @@ Tests cover the core paths; broadening is a next step.
 ## 4. Next steps — another four hours
 
 Robustness and UX, not new features:
-- **Billing:** invoice lifecycle (`draft → issued → void`, review gate, credit notes); a DB guard against double-billing under concurrent runs.
+- **Billing:** invoice lifecycle (`draft → issued → void`, review gate, credit notes); a coordinating lock for fully concurrent runs (the per-entry `unique` already blocks a double-bill at the DB, but a lock would avoid a losing run failing noisily).
 - **Webhooks:** timestamp-bound signing (replay protection); durable long-backoff (`next_retry_at` + beat sweep); reveal-once secret, per-endpoint subscriptions, auto-disable.
 - **UX & tests:** real invoice detail view; filterable delivery log with re-deliver; broaden backend tests and add a frontend harness.
