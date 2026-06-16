@@ -18,10 +18,13 @@ logger = logging.getLogger(__name__)
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={'max_retries': 3})
 def send_invoice_email(invoice_id):
-    """Email the invoice to the company billing address and the freelancer.
+    """Email the invoice to the company billing address and to the freelancer, as
+    *separate* messages so neither party sees the other's address.
 
-    On failure the invoice is marked `failed` and the task retries with backoff;
-    the committed invoice is never affected. `email_status` tracks the outcome.
+    On failure the invoice is marked `failed` and the task retries with backoff; the
+    committed invoice is never affected. Delivery is at-least-once — a retry re-sends
+    to every recipient, including any that already succeeded (per-recipient tracking
+    is deferred). `email_status` tracks the outcome.
     """
     invoice = (Invoice.objects
                .select_related('company', 'freelancer__user')
@@ -33,8 +36,10 @@ def send_invoice_email(invoice_id):
         recipients.append(invoice.freelancer.user.email)
 
     subject = f'Invoice for {invoice.freelancer.name} — {invoice.period:%B %Y}'
+    body = invoice.as_plaintext()
     try:
-        send_mail(subject, invoice.as_plaintext(), None, recipients, fail_silently=False)
+        for recipient in recipients:                 # one message each — no shared To: line
+            send_mail(subject, body, None, [recipient], fail_silently=False)
     except Exception:
         Invoice.objects.filter(pk=invoice_id).update(email_status=Invoice.EmailStatus.FAILED)
         logger.exception('Invoice %s email failed', invoice_id)
