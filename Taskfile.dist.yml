@@ -37,6 +37,12 @@ tasks:
     cmds:
       - uv run celery -A config worker -l info
 
+  backend:beat:
+    desc: Start the Celery Beat scheduler (monthly billing run, 1st of month).
+    dir: backend
+    cmds:
+      - uv run celery -A config beat -l info
+
   frontend:
     desc: Start the frontend development server.
     dir: frontend
